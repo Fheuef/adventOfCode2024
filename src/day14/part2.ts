@@ -76,7 +76,7 @@ class Robot {
 	constructor(public position: Vec2Like = { x: 0, y: 0 }, public velocity: Vec2Like = { x: 0, y: 0 }) {}
 
 	nextPos(time: number = 1): Vec2Like {
-		return Vec2.add(this.position, Vec2.scale(this.velocity, 1));
+		return Vec2.add(this.position, Vec2.scale(this.velocity, time));
 	}
 
 	move(time: number = 1) {

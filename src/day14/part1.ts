@@ -68,7 +68,7 @@ class Robot {
 	constructor(public position: Vec2Like = { x: 0, y: 0 }, public velocity: Vec2Like = { x: 0, y: 0 }) {}
 
 	nextPos(time: number = 1): Vec2Like {
-		return Vec2.add(this.position, Vec2.scale(this.velocity, 1));
+		return Vec2.add(this.position, Vec2.scale(this.velocity, time));
 	}
 
 	move(time: number = 1) {
@@ -83,10 +83,8 @@ class BathroomMap {
 
 	moveRobots(time: number = 1) {
 		for (const robot of this.robots) {
-			for (let i = 0; i < time; i++) {
-				robot.move(1);
-				robot.position = { x: mod(robot.position.x, this.width), y: mod(robot.position.y, this.height) };
-			}
+			robot.move(time);
+			robot.position = { x: mod(robot.position.x, this.width), y: mod(robot.position.y, this.height) };
 		}
 	}
 
