@@ -5,13 +5,13 @@
 // I don't expect that I'll see anything by running it and looking manually
 
 // Maybe the quadrants counting thing can help ?
-// In the shape of a tree, the two top qudrants should have a lot more robots than the
-// bottom ones
+// In the shape of a tree, the two bottom quadrants should have a lot more robots than the
+// top ones
 // I'll try having a breakpoint and printing whenever that happens
 // (Also changed toString to have clearer empty space)
 
-// Pausing when bottom > top * 1.5
-// Quite often, every <1000 seconds, there are a lot of robots an in area just under
+// Pausing when bottom > (top * 1.5)
+// Quite often, every <1000 seconds, there are a lot of robots in an area just under
 // half height
 
 // HELL YEA
