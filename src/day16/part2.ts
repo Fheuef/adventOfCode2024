@@ -1,30 +1,32 @@
-// Hm.
-// Maybe I can keep searching while cells to explore have a score <= bestScore ?
-// Also need to get the path (not just the score)
+// Finally found a solution one month after my first try at this.
 
-// Started doing Dijkstra and saving paths of equal score
-// Problem with forks
+// My first ideas didn't really get anywhere, the initial code had been frankensteined
+// into an almost-Dijkstra search that tried to build a graph as it was exploring the
+// maze. It got really confusing and I'm pretty sure it ended up going in circles.
+// The main issue that had me pulling my hair was basically forks:
 
-// >>>^>>>>>
-//    ^
-//    ^
+// 2>>>^>>>>>
+//     ^
+//     ^
+//     1
+// (coming from the bottom first, left path would be equivalent after the fork, but is abandonned too early)
 
-// The 2 paths coming onto the fork are not considered equivalent, even tho
-// they will be (after the bottom one has turned)
-// Solution : graph should add a node for rotation (right now the score is tied
-// to a position only, no matter where you come from)
-// Other solution : update cost backwards before a turn ??
+// ---
 
-// I kept trying things but it seems like I only made it worse.
-// I don't even know what works and what doesn't in the mess below.
-// Tried rewriting using using node objects, from what I understand if the graph
-// was built correctly and accounted for the turns in the cost I could just run
-// Dijkstra in it, but I can't figure out a way to solve the fork problem
-// (And I've gone crazy trying to save equal paths while not deleting valid previous nodes)
+// The new working solution first builds a graph out of the empty maze positions. Each cell
+// gets 4 nodes for each of the 4 possible directions on that cell.
+// The 4 nodes are linked with edges of cost 1000. Then, it goes through each node, and
+// links it to the one in front (same direction, if it's not a wall) with a cost of 1.
 
-// (Also I wonder why my first DFS using an exact score didn't work)
+// Next, it's a straightforward Dijkstra search through this new graph.
+// From here, getting ALL the best paths isn't too different, we just have to save a list of
+// previous nodes on each node (instead of a single node), and then do a DFS from the
+// end node when building the paths.
 
-// I've wasted way too much time on this and I'm going in circle, that's where I give up for now.
+// ---
+
+// This whole thing had been stirring in my mind most days for a month since I gave up on it.
+// When I finally took the time to implement this, it worked on the first try, so that feels pretty fuckin good :D
 
 import { readFileSync } from "fs";
 
@@ -42,11 +44,29 @@ interface Vec2Like {
 	y: number;
 }
 
-interface ExploreNode {
-	score: number;
-	position: Vec2Like;
-	direction: Direction;
-	rotation?: boolean;
+class MazeNode {
+	hash: string;
+	edges: WeightedEdge<MazeNode>[] = [];
+
+	cost: number = Number.POSITIVE_INFINITY;
+	prev?: MazeNode[];
+
+	constructor(readonly position: Vec2Like, readonly direction: Direction) {
+		this.hash = MazeNode.makeHash(position, direction);
+	}
+
+	addNextNode(node: MazeNode, cost: number) {
+		this.edges.push({ node: node, weight: cost });
+	}
+
+	static makeHash(position: Vec2Like, direction: Direction): string {
+		return `${position.x},${position.y},${direction}`;
+	}
+}
+
+interface WeightedEdge<T> {
+	node: T;
+	weight: number;
 }
 
 class Vec2 {
@@ -55,27 +75,6 @@ class Vec2 {
 	 */
 	static add(a: Vec2Like, b: Vec2Like): Vec2Like {
 		return { x: a.x + b.x, y: a.y + b.y };
-	}
-
-	/**
-	 * a - b
-	 */
-	static sub(a: Vec2Like, b: Vec2Like): Vec2Like {
-		return { x: a.x - b.x, y: a.y - b.y };
-	}
-
-	/**
-	 * a * n
-	 */
-	static scale(a: Vec2Like, n: number): Vec2Like {
-		return { x: a.x * n, y: a.y * n };
-	}
-
-	/**
-	 * f(a)
-	 */
-	static apply(vec: Vec2Like, f: (n: number) => number) {
-		return { x: f(vec.x), y: f(vec.y) };
 	}
 
 	static directionMap: Record<Direction, Vec2Like> = {
@@ -97,39 +96,8 @@ class Vec2 {
 		return `(${v.x}, ${v.y})`;
 	}
 
-	static fromShortString(vecStr: string): Vec2Like {
-		const values = vecStr.split(",");
-		return { x: parseInt(values[0]), y: parseInt(values[1]) };
-	}
-
 	static equals(a: Vec2Like, b: Vec2Like): boolean {
 		return a.x == b.x && a.y == b.y;
-	}
-}
-
-function rotateDirection(direction: Direction, clockWise = true): Direction {
-	if (clockWise) {
-		switch (direction) {
-			case "^":
-				return ">";
-			case ">":
-				return "v";
-			case "<":
-				return "^";
-			case "v":
-				return "<";
-		}
-	} else {
-		switch (direction) {
-			case "^":
-				return "<";
-			case ">":
-				return "^";
-			case "<":
-				return "v";
-			case "v":
-				return ">";
-		}
 	}
 }
 
@@ -163,191 +131,159 @@ class MazeMap {
 		return Vec2.add(pos, dirVec);
 	}
 
-	findCheapestSolution(): { node: ExploreNode; prevNodes: Map<Direction, Vec2Like>[][] } {
-		const exploreScore: Record<Direction, number>[][] = [...Array(this.height)].map((_) =>
-			[...Array(this.width)].map((_) => ({
-				"^": Number.POSITIVE_INFINITY,
-				">": Number.POSITIVE_INFINITY,
-				v: Number.POSITIVE_INFINITY,
-				"<": Number.POSITIVE_INFINITY,
-			}))
-		);
+	buildNavGraph(): Map<string, MazeNode> {
+		const graph = new Map<string, MazeNode>();
 
-		const explored: Record<Direction, boolean>[][] = [...Array(this.height)].map((_) =>
-			[...Array(this.width)].map((_) => ({
-				"^": false,
-				">": false,
-				v: false,
-				"<": false,
-			}))
-		);
+		// Create nodes
+		for (let y = 0; y < this.height; y++) {
+			for (let x = 0; x < this.width; x++) {
+				// Only empty positions
+				if (this.maze[y][x] != MazeCell.EMPTY) continue;
 
-		const prevNodes: Map<Direction, Vec2Like>[][] = [...Array(this.height)].map((_) =>
-			[...Array(this.width)].map((_) => new Map())
-		);
+				// Create 1 node for each direction
+				const upNode = new MazeNode({ x, y }, "^");
+				const rightNode = new MazeNode({ x, y }, ">");
+				const downNode = new MazeNode({ x, y }, "v");
+				const leftNode = new MazeNode({ x, y }, "<");
 
-		let foundExitWithScore: ExploreNode | undefined;
+				// Rotation edges
+				upNode.addNextNode(rightNode, 1000);
+				upNode.addNextNode(leftNode, 1000);
+				rightNode.addNextNode(upNode, 1000);
+				rightNode.addNextNode(downNode, 1000);
+				downNode.addNextNode(rightNode, 1000);
+				downNode.addNextNode(leftNode, 1000);
+				leftNode.addNextNode(downNode, 1000);
+				leftNode.addNextNode(upNode, 1000);
 
-		const exploreQueue: ExploreNode[] = [
-			{ position: this.startState.position, direction: this.startState.direction, score: 0 },
-		];
+				graph.set(upNode.hash, upNode);
+				graph.set(rightNode.hash, rightNode);
+				graph.set(downNode.hash, downNode);
+				graph.set(leftNode.hash, leftNode);
+			}
+		}
 
-		exploreScore[this.startState.position.y][this.startState.position.x][this.startState.direction] = 0;
+		// Movement edges between positions
+		for (const [index, node] of graph) {
+			const forwardPos = Vec2.add(node.position, Vec2.fromDirection(node.direction));
+			const forwardNode = graph.get(MazeNode.makeHash(forwardPos, node.direction));
 
-		let step = 0;
-		let printStep = 0;
-		const printInterval = 2000;
-		while (exploreQueue.length > 0) {
-			exploreQueue.sort(
-				(a, b) =>
-					exploreScore[a.position.y][a.position.x][a.direction] -
-					exploreScore[b.position.y][b.position.x][b.direction]
-			);
+			if (!forwardNode) continue;
 
-			const exploreNode = exploreQueue[0];
-			exploreQueue.splice(0, 1);
+			node.addNextNode(forwardNode, 1);
+		}
 
-			const newNodes = this.neighborNodes(exploreNode);
+		return graph;
+	}
 
-			for (const newNode of newNodes) {
-				if (explored[newNode.position.y][newNode.position.x][newNode.direction]) {
-					continue;
-				}
-				explored[newNode.position.y][newNode.position.x][newNode.direction] = true;
+	/**
+	 * Runs the Dijkstra algorithm on the given graph. Modifies the graph by setting
+	 * cost values and previous nodes for the shortest paths from the maze's start
+	 * position to the exit.
+	 */
+	dijkstra(graph: Map<string, MazeNode>) {
+		const exploreQueue: MazeNode[] = [...graph.values()];
+		const explored = new Set<string>();
 
-				const fromPos = exploreNode.position;
+		const startNode = graph.get(MazeNode.makeHash(this.startState.position, this.startState.direction));
+		if (!startNode) throw new Error("No start node");
 
-				if (Vec2.equals(newNode.position, { x: 13, y: 13 })) {
-					console.log("test");
-				}
+		startNode.cost = 0;
 
-				const isEnd = Vec2.equals(newNode.position, this.end);
+		const popMinNode = () => {
+			let minNodeIndex = 0;
+			let minCost = exploreQueue[0].cost;
 
-				const isRotationNode = newNode.rotation ?? false;
+			for (let i = 0; i < exploreQueue.length; i++) {
+				const n = exploreQueue[i];
 
-				// if (!isRotationNode && explored[exploreNode.position.y][exploreNode.position.x]) continue;
-
-				// const newNodeScore = exploreNode.score + (isRotationNode ? 1000 : 1);
-				const newNodeScore = newNode.score;
-				const savedScore = isEnd
-					? foundExitWithScore?.score ?? Number.POSITIVE_INFINITY
-					: exploreScore[newNode.position.y][newNode.position.x][newNode.direction];
-
-				if (newNodeScore > savedScore) continue;
-
-				if (newNodeScore == savedScore) {
-					// add fromPos to list of prev nodes for this node
-					// prevNodes[newNode.position.y][newNode.position.x].set(newNode.direction, fromPos);
-				} else {
-					// Better score: new prev nodes
-					exploreScore[newNode.position.y][newNode.position.x][newNode.direction] = newNodeScore;
-
-					let prevPos = fromPos;
-
-					// if (Vec2.equals(prevPos, newNode.position)) {
-					// 	// let i = 0;
-					// 	for (const possiblePrev of prevNodes[fromPos.y][fromPos.x].values()) {
-					// 		prevPos = possiblePrev;
-					// 		if (!Vec2.equals(prevPos, newNode.position)) {
-					// 			break;
-					// 		}
-					// 	}
-					// }
-
-					if (!Vec2.equals(prevPos, newNode.position))
-						prevNodes[newNode.position.y][newNode.position.x].clear();
-
-					prevNodes[newNode.position.y][newNode.position.x].set(newNode.direction, prevPos);
-
-					// prevNodes[newNode.position.y][newNode.position.x].push(fromPos);
-				}
-
-				if (isEnd) {
-					if (!foundExitWithScore || newNodeScore < foundExitWithScore.score) {
-						foundExitWithScore = { ...newNode, score: newNodeScore };
-						console.log("Found exit with score", foundExitWithScore);
-					}
-				} else {
-					exploreQueue.push({ ...newNode, score: newNodeScore });
+				if (n.cost < minCost) {
+					minCost = n.cost;
+					minNodeIndex = i;
 				}
 			}
 
-			// Debug
-			// if (printStep + printInterval <= step) {
-			// 	printStep = step;
-			// 	console.log("Step", step);
-			// 	console.log("Explore next", toExploreNext.length);
-			// 	console.log("Lowest score", exploreNode);
-			// 	console.log("Found exit", foundExitWithScore);
-			// }
-			// step++;
+			const minNode = exploreQueue[minNodeIndex];
+			exploreQueue.splice(minNodeIndex, 1);
+
+			return minNode;
+		};
+
+		while (exploreQueue.length > 0) {
+			// Get node with minimum cost from queue
+			const exploreNode = popMinNode();
+
+			explored.add(exploreNode.hash);
+
+			// Reached exit
+			if (Vec2.equals(exploreNode.position, this.end)) {
+				graph.set("end", exploreNode);
+				break;
+			}
+
+			for (const neighborEdge of exploreNode.edges) {
+				// Unexplored neighbor
+				if (explored.has(neighborEdge.node.hash)) continue;
+
+				const newCost = exploreNode.cost + neighborEdge.weight;
+				if (newCost < neighborEdge.node.cost) {
+					neighborEdge.node.cost = newCost;
+					neighborEdge.node.prev = [exploreNode];
+				} else if (newCost == neighborEdge.node.cost) {
+					const currentPrev = neighborEdge.node.prev ?? [];
+					neighborEdge.node.prev = [...currentPrev, exploreNode];
+				}
+			}
 		}
-
-		return { node: foundExitWithScore!, prevNodes };
 	}
 
-	neighborNodes({ score, position, direction, rotation }: ExploreNode): ExploreNode[] {
-		if (this.getCell(position) == MazeCell.WALL) return [];
+	buildPath(graph: Map<string, MazeNode>) {
+		const path: Vec2Like[] = [];
+		const explored = new Set<string>();
 
-		const newNodes: ExploreNode[] = [];
+		let endNode: MazeNode | undefined = graph.get("end");
+		if (!endNode) return path;
 
-		// Move forward
-		const forwardPos = this.nextPosInDir(position, direction);
-		if (this.getCell(forwardPos) == MazeCell.EMPTY)
-			newNodes.push({ position: forwardPos, direction: direction, score: score + 1 });
+		const startNode = graph.get(MazeNode.makeHash(this.startState.position, this.startState.direction));
+		if (!endNode.prev && endNode != startNode) return path;
 
-		// Don't rotate twice without moving
-		if (rotation) return newNodes;
+		const buildNode = (node: MazeNode | undefined) => {
+			if (!node) return;
 
-		// Rotate 90deg clockwise
-		const rightDir = rotateDirection(direction, true);
-		const rightPos = this.nextPosInDir(position, rightDir);
-		if (this.getCell(rightPos) == MazeCell.EMPTY)
-			newNodes.push({ position: position, direction: rightDir, score: score + 1000, rotation: true });
+			explored.add(node.hash);
 
-		// Rotate 90deg anti-clockwise
-		const leftDir = rotateDirection(direction, false);
-		const leftPos = this.nextPosInDir(position, leftDir);
-		if (this.getCell(leftPos) == MazeCell.EMPTY)
-			newNodes.push({ position: position, direction: leftDir, score: score + 1000, rotation: true });
+			path.push(node.position);
 
-		return newNodes;
-	}
-
-	buildPaths(endPosition: Vec2Like, prevNodes: Map<Direction, Vec2Like>[][]) {
-		const paths: Vec2Like[] = [endPosition];
-
-		const explored: Record<Direction, boolean>[][] = [...Array(this.height)].map((_) =>
-			[...Array(this.width)].map((_) => ({
-				"^": false,
-				">": false,
-				v: false,
-				"<": false,
-			}))
-		);
-
-		const buildPos = (position: Vec2Like) => {
-			for (const [dir, prev] of prevNodes[position.y][position.x].entries()) {
-				if (explored[prev.y][prev.x][dir]) continue;
-
-				explored[prev.y][prev.x][dir] = true;
-
-				paths.push(prev);
-				buildPos(prev);
+			if (node.prev) {
+				for (const prevNode of node.prev) {
+					if (!explored.has(prevNode.hash)) buildNode(prevNode);
+				}
 			}
 		};
 
-		buildPos(endPosition);
+		buildNode(endNode);
 
-		return paths;
+		path.reverse();
+
+		return path;
 	}
 
-	toString(withPaths: Vec2Like[] = []) {
+	findBestPaths() {
+		const graph = this.buildNavGraph();
+
+		this.dijkstra(graph);
+		const endNode = graph.get("end")!;
+
+		const path = this.buildPath(graph);
+
+		return { cost: endNode.cost, path: path };
+	}
+
+	toString(withPaths: Vec2Like[] = [], ansiColor = true) {
 		const mapStrLines: string[][] = this.maze.map((cellLine) =>
 			cellLine.map((cell) => {
 				switch (cell) {
 					case MazeCell.WALL:
-						// return "#";
 						return "#";
 
 					default:
@@ -359,8 +295,13 @@ class MazeMap {
 		mapStrLines[this.startState.position.y][this.startState.position.x] = "S";
 		mapStrLines[this.end.y][this.end.x] = "E";
 
+		let pathCellStr = "O";
+		if (ansiColor) {
+			pathCellStr = "\x1b[31m" + pathCellStr + "\x1b[0m";
+		}
+
 		for (const pos of withPaths) {
-			mapStrLines[pos.y][pos.x] = "O";
+			mapStrLines[pos.y][pos.x] = pathCellStr;
 		}
 
 		return mapStrLines.map((line) => line.join("")).join("\n");
@@ -404,23 +345,16 @@ async function reindeerMaze(inputFile: string) {
 	const input = readFileSync(`src/day16/${inputFile}`).toString();
 
 	const maze = MazeMap.fromString(input);
-	console.log(maze.toString());
 
-	const solution = maze.findCheapestSolution();
+	const solution = maze.findBestPaths();
 
-	console.log("Shortest solution", solution.node.score);
-
-	const paths = maze.buildPaths(solution.node.position, solution.prevNodes);
-	console.log(paths);
-
-	const mazePathsStr = maze.toString(paths);
+	const mazePathsStr = maze.toString(solution.path);
 	console.log(mazePathsStr);
 
-	console.log(paths.length);
-
+	console.log("Shortest solution", solution.cost);
 	console.log("Path cells", MazeMap.countPathCells(mazePathsStr));
 }
 
-reindeerMaze("input_test"); // 7036 - Path 45
+// reindeerMaze("input_test"); // 7036 - Path 45
 // reindeerMaze("input_test2"); // 11048 - Path 64
-// reindeerMaze("input"); // 102460
+reindeerMaze("input"); // 102460 - Path 527
